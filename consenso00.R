@@ -6,7 +6,7 @@ library(forcats)
 library(RColorBrewer)
 library(dplyr)
 library(ggplot2)
-
+library(xts)
 ## datos "El Mundo"
 source("get_dataset.R")
 
@@ -80,7 +80,36 @@ df <- data.table(do.call("rbind", params))
 
 final <- merge(encuestas,df, by.x=c("fecha","empresaymedio","partido"), by.y=c("fecha","medio","partido"))
 
-final$sesgo <- final$intencionvoto - final$sego
+final$sesgo <- final$consenso - final$intencionvoto
+
+detach(encuestas)
+
+
+################ Gráfico sesgo
+
+
+final%>%ggplot(aes(x=partido,y=sesgo,fill=empresaymedio))+
+  geom_bar(stat="identity",position="dodge")+
+  facet_wrap(~partido,scales="free_x")+
+  #theme(axis.text.x=element_text(angle=90,hjust=1))+
+  xlab("Partido")+ylab("Sesgo")+scale_fill_discrete(name="Pollster")+
+  theme_bw()+theme(legend.position="bottom")
+
+
+final%>%filter(partido%in%c("pp","psoe","podemos","cs")&!is.na(sesgo))%>%
+  ggplot(aes(x=fecha,y=sesgo,colour=partido))+geom_point()+geom_line()+facet_wrap(~empresaymedio)+
+  theme(axis.text.x=element_text(angle=90,hjust=1))
+
+
+final%>%filter(partido%in%c("pp","psoe","podemos","cs")&!is.na(sesgo))%>%
+  ggplot(aes(x=empresaymedio,y=sesgo,fill=empresaymedio))+geom_boxplot()+facet_wrap(~partido)+
+  theme(axis.text.x=element_text(angle=90,hjust=1))
+
+
+final%>%filter(partido%in%c("pp","psoe","podemos","cs")&!is.na(sesgo))%>%
+  ggplot(aes(x=partido,y=sesgo,fill=partido))+geom_boxplot()+facet_wrap(~empresaymedio)+
+  theme(axis.text.x=element_text(angle=90,hjust=1))
+dev.off()
 
 
 ######### calculamos un lm del sesgo por el medio para obtener los intervalos de confianza de esos valores 
