@@ -112,6 +112,20 @@ final%>%filter(partido%in%c("pp","psoe","podemos","cs")&!is.na(sesgo))%>%
 dev.off()
 
 
+
+
+###### dibujamos consenso que es nuestro predcit del método GAM
+ggplot(final, aes(x=fecha, y=intencionvoto*100, col=partido)) +
+  geom_jitter(alpha=I(.3), size=I(1.4)) +
+  geom_line(aes(y=consenso*100),data=final) +
+  #scale_color_manual(intencionvoto=palette) +
+  #scale_fill_manual(intencionvoto=palette) +
+  labs(col="", y="Intención voto predicha (GAM)", x="") +
+  guides(colour=guide_legend(override.aes = list(alpha = 1, size=3),
+                             direction="horizontal", keywidth=.8)) +
+  theme_bw()+theme(legend.position="bottom")
+
+
 ######### calculamos un lm del sesgo por el medio para obtener los intervalos de confianza de esos valores 
 
 modpp <- lm(final[final$partido == "pp",]$sesgo ~ final[final$partido == "pp",]$empresaymedio)
@@ -126,5 +140,50 @@ modcs <- lm(final[final$partido == "cs",]$sesgo ~ final[final$partido == "cs",]$
 
 modpodemos <- lm(final[final$partido == "podemos",]$sesgo ~ final[final$partido == "podemos",]$empresaymedio)
 #confint(modpodemos)
+
+
+
+
+########## gráficos previos incluir en el rmd 
+
+
+#pdf("figures/ge2015_votingIntention.pdf", 6, 4)
+ggplot(encuestas, aes(x=fecha, y=intencionvoto*100, col=partido)) +
+  geom_jitter(alpha=I(.3), size=I(1.4)) +
+  geom_smooth(aes(fill=partido), col=I("grey65"), show_guide=F) +
+  #scale_color_manual(intencionvoto=palette) +
+  #scale_fill_manual(intencionvoto=palette) +
+  labs(col="", y="Intención voto (Loess)", x="") +
+  guides(colour=guide_legend(override.aes = list(alpha = 1, size=3),
+                             direction="horizontal", keywidth=.8)) +
+  theme_bw()+theme(legend.position="bottom")
+#dev.off()  
+
+
+# commisioned by...
+newspapers <- c("La Razón (NC Report)", "El País (Metroscopia)", "ABC (GAD3)", "El Mundo (Sigma Dos)")
+
+
+encuestas$newspaper <- NA
+
+for(n in newspapers){
+  encuestas$newspaper[which(n == encuestas$empresaymedio)]  <- n
+}
+
+encuestas$newspaper <- as.factor(encuestas$newspaper)
+counts <- encuestas %>% group_by(newspaper) %>% tally()
+pick <- counts[which(counts$n > 50),]$newspaper
+
+ggplot(subset(encuestas, newspaper %in% pick),
+       aes(x=fecha, y=intencionvoto*100, col=newspaper, group=newspaper)) +
+  geom_jitter(alpha=I(.5), size=I(1.4)) +
+  facet_wrap(~partido, scales="free_y") +
+  geom_smooth(method="loess", se=F, show_guide=F, size=1.2) +
+  scale_color_brewer(type="qual", palette="Set2") +
+  scale_fill_brewer(type="qual", palette="Set2") +
+  labs(col="Newspaper", y="Voting intention (%)", x="") +
+  guides(colour=guide_legend(override.aes = list(alpha = 1, size=3),
+                             direction="vertical", keywidth=.8, ncol=1)) +
+  theme(legend.position=c(.85, .15))
 
 
