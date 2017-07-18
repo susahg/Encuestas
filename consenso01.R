@@ -6,6 +6,7 @@ library(forcats)
 library(RColorBrewer)
 library(dplyr)
 library(ggplot2)
+library(boot)
 
 ## datos "El Mundo"
 source("get_dataset.R")
@@ -83,13 +84,26 @@ df <- data.table(do.call("rbind", params))
 
 final <- merge(encuestas,df, by.x=c("fecha","empresaymedio","partido"), by.y=c("fecha","medio","partido"))
 
-library(boot)
+
 #final$sesgo <- final$intencionvoto - final$consenso #con type en predict =response
 final$sesgo <- final$consenso - logit(final$intencionvoto)   #con type en predict =lynk
 
 final <- final[,c('fecha','empresaymedio','sesgo','partido')]
 
 house <- spread(key=partido,value=sesgo, data = final)
+
+
+###### dibujamos consenso que es nuestro predcit del método GAM y predict con type= lynk y logit(intencionvoto)
+ggplot(final, aes(x=fecha, y=logit(intencionvoto), col=partido)) +
+  geom_jitter(alpha=I(.3), size=I(1.4)) +
+  geom_line(aes(y=consenso),data=final) +
+  #scale_color_manual(intencionvoto=palette) +
+  #scale_fill_manual(intencionvoto=palette) +
+  labs(col="", y="Logit Intención voto predicha (GAM)", x="") +
+  guides(colour=guide_legend(override.aes = list(alpha = 1, size=3),
+                             direction="horizontal", keywidth=.8)) +
+  theme_bw()+theme(legend.position="bottom")
+
 
 ######### calculamos un lm del sesgo por el medio para obtener los intervalos de confianza de esos valores 
 
