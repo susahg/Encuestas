@@ -321,7 +321,7 @@ final <- final[!(final$empresaymedio %in% medios),]
 ## dataset que tiene para cada medio y partido la media del sesgo y 2sigma
 media_sesgo <- final %>%
   group_by(partido,empresaymedio) %>%
-  summarise(Sesgo = mean(sesgo),sesgo_2sd=2*sd(sesgo))
+  summarise(Sesgo = mean(sesgo*100),sesgo_2sd=2*sd(sesgo*100))
 
 
 ### calculamos el  consenso para ese punto 
