@@ -16,7 +16,7 @@ library(data.table)
 #encuestas$fecha <- as.Date(encuestas$fecha)
 
 
-#### n?mero de encuestas que tenemos ... haremos una selecci?n de las que m?s casos tenemos
+#### número de encuestas que tenemos ... haremos una selección de las que más casos tenemos
 
 encuestas %>%
   #select(empresaymedio) %>%
@@ -39,12 +39,13 @@ table(encuestas %>%
 
 
 ##############################################
+######## MODELO
 
-#funciÃ³n calcula consenso
-sesgo_medio <- function(hastaaqui, ventana,el_partido){
+#función calcula consenso
+sesgo_medio <- function(hastaaqui, ventana,el_partido,dataset){
   
   # data for party 
-  data_id <- encuestas %>%
+  data_id <- dataset %>%
     filter(partido == el_partido)
   data_id$id <- row.names(data_id)
   
@@ -85,10 +86,10 @@ sesgo_medio <- function(hastaaqui, ventana,el_partido){
     #mod <- gam(intencionvoto ~ t2(as.numeric(fecha),k=4, bs="cr"), 
     #             family = "quasibinomial", data = thedata)
     
-     
-    preddata2 <- data_id[data_id$id %in% hastaaquideverdad, c("fecha","empresaymedio")]
+    
+    preddata2 <- data_id[data_id$id %in% (idhastaaqui+1), c("fecha","empresaymedio")]
 
-    preddata <- as.data.frame(data_id[data_id$id %in% hastaaquideverdad, "fecha"])
+    preddata <- as.data.frame(data_id[data_id$id %in% (idhastaaqui+1), "fecha"])
     colnames(preddata) <- "fecha"
     
  
@@ -101,7 +102,7 @@ sesgo_medio <- function(hastaaqui, ventana,el_partido){
                         fecha = as.Date(preddata2$fecha,format= "%Y-%m-%d"),
                         medio = preddata2$empresaymedio)
       res
-    
+      
 }
  
 
@@ -114,7 +115,7 @@ prueba <- expand.grid(fechas,elpartido)
 #### calcula el sesgo para cada id del data frame posterior a la ventana, por partido.
 
 params <- apply(prueba,1, function(x){
-  sesgo_medio(as.Date(x['Var1']),60,x['Var2'])
+  sesgo_medio(as.Date(x['Var1']),60,x['Var2'],encuestas)
 })
 
 df <- data.table(do.call("rbind", params))
@@ -130,7 +131,7 @@ final <- final[!(final$empresaymedio %in% medios),]
 
 
 
-###### dibujamos consenso que es nuestro predcit del m?todo GAM
+###### dibujamos consenso que es nuestro predcit del método GAM
 house_colours <- c("orange","purple","blue","red")
 
 names(house_colours) <-   c("cs", "podemos", "pp", "psoe")
@@ -145,6 +146,9 @@ ggplot(final, aes(x=fecha, y=intencionvoto*100, col=partido)) +
   guides(colour=guide_legend(override.aes = list(alpha = 1, size=3),
                              direction="horizontal", keywidth=.8)) +
   theme_bw()+theme(legend.position="bottom")
+
+#############################################################################################################
+
 
 ################ Gráfico sesgo
 
@@ -271,5 +275,89 @@ X%>%filter(!is.na(inst))%>%ggplot(aes(x=date, y=value))+
   theme(axis.text.x=element_text(angle=90,hjust=1))
 
 
+###############################################################
+############## probamos el modelo
+
+#### calculamos el último día de encuestas de cada medio
+
+# último dato La Razón 2017-07-09
+encuestas_train <- encuestas[encuestas$fecha < "2017-07-09",]
+# último dato El País 2017-07-09
+#encuestas_train <- encuestas[encuestas$fecha < "2017-07-18",]
+
+
+#ultimo_dia <- encuestas_train %>%
+#  filter(partido == "pp") %>%
+#  #group_by(empresaymedio) %>%
+#  filter(fecha == max(fecha)) %$%
+#  fecha
+
+
+#encuestas_train <- encuestas[encuestas$fecha < "2017-07-07",]
+
+
+# calculamos el modelo par obtener el sesgo
+elpartido <- c("pp","psoe","cs","podemos")
+ventana <- 60 
+fechas <- encuestas_train[(ventana+1):((nrow(encuestas_train)/4)), "fecha"]
+prueba <- expand.grid(fechas,elpartido)
+
+
+params <- apply(prueba,1, function(x){
+  sesgo_medio(as.Date(x['Var1']),60,x['Var2'],encuestas_train)
+})
+
+
+df <- data.table(do.call("rbind", params))
+
+final <- merge(encuestas_train,df, by.x=c("fecha","empresaymedio","partido"), by.y=c("fecha","medio","partido"))
+
+final$sesgo <- final$intencionvoto - final$consenso
+
+medios <- c("GESOP/El PeriÃ³dico","GIPEyOP/Mediaflows","JJD/lainformacion.com","La Vanguardia (GAD3)","Redondo&Asociados","20 Minutos (A+M)","Libertad Digital (Demoscopia y Servicios","Llorente & Cuenca (IMOP)","NC Report","Resultado elecciones","Ãltima Hora (IBES)")
+final <- final[!(final$empresaymedio %in% medios),]
+
+
+## dataset que tiene para cada medio y partido la media del sesgo y 2sigma
+media_sesgo <- final %>%
+  group_by(partido,empresaymedio) %>%
+  summarise(Sesgo = mean(sesgo*100),sesgo_2sd=2*sd(sesgo*100))
+
+
+### calculamos el  consenso para ese punto 
+### PREGUNTA: ¿PRUEBO CON VENTANAS MÁS PEQUEÑAS? tanto en el calculo del sesgo_medio como en 
+### calculo del nuevo consenso
+
+consenso_pp <- sesgo_medio("2017-07-18",60,"pp",encuestas)
+
+#valor <- consenso_pp$consenso*100 + as.numeric(media_sesgo[media_sesgo$empresaymedio == "La Razón (NC Report)" & media_sesgo$partido == "pp","Sesgo"])
+valor <- consenso_pp$consenso*100 + as.numeric(media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","Sesgo"])
+
+valor_inf <- valor - media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","sesgo_2sd"]
+valor_sup <- valor + media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","sesgo_2sd"]
+
+#-----
+consenso_podemos <- sesgo_medio("2017-07-18",60,"podemos",encuestas)
+
+#valor <- consenso_pp$consenso*100 + as.numeric(media_sesgo[media_sesgo$empresaymedio == "La Razón (NC Report)" & media_sesgo$partido == "pp","Sesgo"])
+valor <- consenso_podemos$consenso*100 + as.numeric(media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "podemos","Sesgo"])
+
+valor_inf <- valor - media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","sesgo_2sd"]
+valor_sup <- valor + media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","sesgo_2sd"]
+
+##### prueba podemos La Razón
+consenso_podemos <- sesgo_medio("2017-07-09",60,"podemos",encuestas)
+
+valor <- consenso_podemos$consenso*100 + as.numeric(media_sesgo[media_sesgo$empresaymedio == "La Razón (NC Report)" & media_sesgo$partido == "podemos","Sesgo"])
+
+
+valor_inf <- valor - media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","sesgo_2sd"]
+valor_sup <- valor + media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","sesgo_2sd"]
+
+
+## datos para comparar contra el predicho
+suerte <- encuestas %>%
+  group_by(empresaymedio,partido) %>%
+  filter(fecha == max(fecha)) 
 
 
