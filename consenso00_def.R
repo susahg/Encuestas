@@ -321,17 +321,17 @@ final <- final[!(final$empresaymedio %in% medios),]
 ## dataset que tiene para cada medio y partido la media del sesgo y 2sigma
 media_sesgo <- final %>%
   group_by(partido,empresaymedio) %>%
-  summarise(Sesgo = mean(sesgo*100),sesgo_2sd=2*sd(sesgo*100))
+  summarise(Sesgo = mean(sesgo),sesgo_2sd=2*sd(sesgo))
 
 
 ### calculamos el  consenso para ese punto 
 ### PREGUNTA: ¿PRUEBO CON VENTANAS MÁS PEQUEÑAS? tanto en el calculo del sesgo_medio como en 
 ### calculo del nuevo consenso
 
-consenso_pp <- sesgo_medio("2017-07-18",60,"pp",encuestas)
+consenso_pp <- sesgo_medio("2017-07-09",30,"pp",encuestas)
 
-#valor <- consenso_pp$consenso*100 + as.numeric(media_sesgo[media_sesgo$empresaymedio == "La Razón (NC Report)" & media_sesgo$partido == "pp","Sesgo"])
-valor <- consenso_pp$consenso*100 + as.numeric(media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","Sesgo"])
+valor <- consenso_pp$consenso*100 + as.numeric(media_sesgo[media_sesgo$empresaymedio == "La Razón (NC Report)" & media_sesgo$partido == "pp","Sesgo"])
+#valor <- consenso_pp$consenso*100 + as.numeric(media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","Sesgo"])
 
 valor_inf <- valor - media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","sesgo_2sd"]
 valor_sup <- valor + media_sesgo[media_sesgo$empresaymedio == "El País (Metroscopia)" & media_sesgo$partido == "pp","sesgo_2sd"]
