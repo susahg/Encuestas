@@ -14,3 +14,9 @@ Modelo
 
 Modelo genera consenso y sesgo
 + consenso00_def.R
+
+Modelo y Predicción
+--------------------
+
+Modelo DEFINITIVO y predicción
++ modeloyprediccion.R
