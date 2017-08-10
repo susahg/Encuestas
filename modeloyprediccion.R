@@ -1,3 +1,14 @@
+library(mgcv)
+library(tidyverse)
+library(scales)
+library(magrittr)
+library(forcats)
+library(RColorBrewer)
+library(dplyr)
+library(ggplot2)
+library(xts)
+library(data.table)
+
 ##############################################
 ######## MODELO
 
@@ -339,4 +350,5 @@ d %>%
        caption = "")  +
   ggtitle("fatal",
           "")
+
 
