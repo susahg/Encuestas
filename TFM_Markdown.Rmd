@@ -1,0 +1,858 @@
+---
+title: "Predicción de la predicción de encuestas"
+author: "Susana Huedo García"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+  html_document:
+    highlight: tango
+    theme: united
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+---
+
+
+
+### Resumen —
+
+En este trabajo de fin de máster se diseña y desarrolla un modelo capaz de predecir la intención de voto que publicarán los distintos medios de comunicación.
+
+La motivación de este trabajo viene porque ninguna encuesta publicada acierta en los más mínimo y porque determinados medios suelen siempre sobreestimar el voto de algunos partidos políticos y subestimar otros. 
+
+Algunas variaciones se explican por la elección de los encuestados y el margen de error de cada sondeo, dependiente entre otros factores del número de entrevistados (tamaño de la muestra). Sin embargo, la diferencia principal se encuentra en el modelo estadístico que sigue cada empresa encuestadora a la hora de calcular la estimación de voto de cada partido, la llamada "cocina".
+
+Nuestro modelo será capaz de recoger ese efecto “cocina” y obtener el dato de estimación de voto de cada medio. 
+
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+library(mgcv)
+library(tidyverse)
+library(scales)
+library(magrittr)
+library(forecast)
+library(forcats)
+library(RColorBrewer)
+library(dplyr)
+library(plyr)
+library(ggplot2)
+library(xts)
+library(ggjoy)
+library(reshape2)
+library(XML)
+```
+
+
+## Introducción
+
+Es sabido que el dato bruto de intención de voto directo que ofrecen las encuestas en España no suele arrojar un buen pronóstico sobre el resultado final de las elecciones.
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+source("get_dataset_def.R")
+house_colours <- c("orange","purple","blue","red")
+names(house_colours) <-   c("cs", "podemos", "pp", "psoe")
+
+results_elect <- encuestas %>%
+  filter(empresaymedio == "Resultado elecciones") %>%
+  filterfilter(partido == "pp")
+ 
+encuestas %>% filter(partido == "pp") %>% 
+ ggplot(aes(x=fecha, y=intencionvoto*100, col=partido)) +
+  geom_jitter(alpha=I(.3), size=I(1.4)) +
+  geom_smooth(aes(fill=partido), col=I("grey65"), show_guide=F,method = "loess") +
+  scale_color_manual(values=house_colours) +
+  scale_fill_manual(values=house_colours) +
+  labs(col="", y="Intención voto (Loess)", x="") +
+  ggrepel::geom_label_repel(aes(label = intencionvoto*100), data = results_elect) +
+  #geom_vline(aes(xintercept=as.numeric(as.Date("2015-12-20"))),
+  #           linetype=5, colour="red") +
+  #geom_vline(aes(xintercept=as.numeric(as.Date("2016-06-26"))),
+  #           linetype=5, colour="red") +
+  ggtitle("Encuestas sobre intención de voto para el PP") +
+  guides(colour=guide_legend(override.aes = list(alpha = 1, size=3),
+                             direction="horizontal", keywidth=.8)) +
+  labs(caption = "Los porcentajes pertenecen a los resultados de las elecciones 2015-2016") +
+  theme_bw()+theme(legend.position="bottom")
+```
+
+El caso del PP en el período comprendido entre las elecciones de 2015 y 2016, los medios tenían, en promedio, menor intención de voto de lo que finalmente ocurrió.
+
+Esto está relacionado con causas diversas, como que hay un número importante de personas que no responde a la pregunta de a quién va a votar, que otras tienden a ocultar que se van a abstener o que determinados grupos de población son excluidos de las entrevistas por carecer de teléfono fijo, entre otras.
+
+Por todo ello se originan sesgos que los responsables de los estudios tratan de corregir a través de lo que popularmente se conoce como “la cocina”, es decir, la aplicación de procedimientos –por lo general estandarizados y con base estadística– que permiten aproximarse mejor al resultado final.  Dado que no existe un único procedimiento posible para elaborar esas estimaciones y que las mismas pueden tener un importante efecto político, el cómo se han obtenido y el resultado logrado suelen ser objeto de debate público.
+
+## Planteamiento del problema y objetivos
+
+Es discutible si las encuestas preelectorales son o no saludables para nuestra democracia en general, pero al menos todos están de acuerdo en que las encuestas deben ser algo neutras. 
+
+Este gráfico recoge la intención de voto de tres de los periódicos más importantes.
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+newspapers <- c("La Razón (NC Report)", "El País (Metroscopia)", "ABC (GAD3)", "El Mundo (Sigma Dos)")
+
+encuestas_new <- encuestas
+encuestas_new$newspaper <- NA
+
+for(n in newspapers){
+  encuestas_new$newspaper[which(n == encuestas_new$empresaymedio)]  <- n
+}
+
+encuestas_new$newspaper[encuestas_new$newspaper == "La Razón (NC Report)"] <- "La Razón"
+encuestas_new$newspaper[encuestas_new$newspaper == "El País (Metroscopia)"] <- "El País"
+encuestas_new$newspaper[encuestas_new$newspaper == "ABC (GAD3)"] <- "ABC"
+
+
+encuestas_new$newspaper <- as.factor(encuestas_new$newspaper)
+counts <- encuestas_new %>% group_by(newspaper) %>% tally()
+pick <- counts[which(counts$n > 50),]$newspaper
+
+ggplot(subset(encuestas_new, newspaper %in% pick),
+       aes(x=fecha, y=intencionvoto*100, col=newspaper, group=newspaper)) +
+  geom_jitter(alpha=I(.5), size=I(1.4)) +
+  facet_wrap(~partido, scales="free_y") +
+  geom_smooth(method="loess", se=F, show_guide=F, size=1.2) +
+  geom_vline(aes(xintercept=as.numeric(as.Date("2015-12-20"))),
+             linetype=5, colour="black") +
+  geom_vline(aes(xintercept=as.numeric(as.Date("2016-06-26"))),
+             linetype=5, colour="black") +
+  scale_color_brewer(type="qual", palette="Set2") +
+  scale_fill_brewer(type="qual", palette="Set2") +
+  labs(col="Newspaper", y="Voting intention (%)", x="") +
+  ggtitle("Intención de voto de los 3 principales periódicos",
+          "La línea vertical roja marca las elecciones de 2015 y 2016") +
+  guides(colour=guide_legend(override.aes = list(alpha = 1, size=3),
+                             direction="vertical", keywidth=.8, ncol=1)) +
+  theme(legend.position=c(.95, .90),legend.key.width=unit(0.3,"cm"),legend.key.height=unit(0.3,"cm"))
+```
+
+Los puntos representan el resultado de las encuestas de los diferentes medios, la curva suavizada (LOESS) nos ayuda a recoger su tendencia. Para el caso concreto del PP vemos una tendencia de La Razón a dar un resultado mayor al que puede dar El País.
+
+Centrémonos en los dos principales periódicos del país.
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+
+get_median <- function(X, meanOfMedianPerInstitute=TRUE, asList=F) {
+  if (meanOfMedianPerInstitute) {
+    # complex approach:
+    # first, compute the median for each quarter and each institute
+    # and then take the mean per quarters
+    medianByInst <- tapply(1:nrow(X), X$inst, function(i) { 
+      tapply(X$value[i], as.yearqtr(X$date[i]), median, na.rm=T)
+    })
+    qtr <- vector(mode='character')
+    med <- vector(mode='numeric')
+    for (inst in rownames(medianByInst)) {
+      qtr <- append(qtr, rownames(medianByInst[[inst]]))
+      med <- append(med, as.numeric(medianByInst[[inst]]))
+    }    
+    val <- tapply(med, qtr, mean)
+  } else {
+    # simple approach:
+    # compute median of all institutes polls per quarter
+    val <- tapply(X$value, as.yearqtr(X$date), median, na.rm=T)
+  }
+  if (asList) {
+    val
+  } else {
+    data.frame(value=as.numeric(val),date=seq(as.Date("2015/1/1"), length.out=length(val), by = "quarter"))
+  }
+}
+#################
+
+encuestas_uk <- encuestas
+encuestas_uk$intencionvoto <- encuestas_uk$intencionvoto*100
+colnames(encuestas_uk) <- c("inst","muestra","date","margendeerror","party","value")
+
+X <- subset(encuestas_uk, encuestas_uk$party == 'pp')
+mediana <- get_median(X)
+
+X <- subset(X, encuestas_uk$inst == 'La Razón (NC Report)' | encuestas_uk$inst == 'El País (Metroscopia)')
+
+
+X%>%filter(!is.na(inst))%>%ggplot(aes(x=date, y=value))+
+  geom_jitter(alpha=I(.3), size=I(1.4),col="blue") +
+  geom_line(aes(x=date,y=value),col="red",data=mediana) +
+  facet_wrap(~inst,scales="free_x")+
+  labs(col="Periódico", y="Intención de voto (%)", x="") +
+  ggtitle("Intención de voto para el PP",
+          "La línea roja es la mediana calculada por cuartos") +
+  theme(axis.text.x=element_text(angle=90,hjust=1))
+```
+
+La curva es la tendencia mediana por cuatrimestre. Los puntos azules representan las encuestas para La Razón y El País. Lo que se esperaría de una encuesta no sesgada es que los valores estuvieran bastante centrados alrededor de la mediana. La mayoría de las encuestas publicadas por El País están por debajo de la mediana de las encuestas por todos los institutos. Así, mientras que las encuestas de La Razón parecen estar a favor del PP.
+
+La Razón publica encuestas en las que el Partido Popular se pronostica un promedio por encima de la mediana de todas las encuestas publicadas en ese período. Esto es difícil de creer, dado que los institutos están reclamando entrevistar a un grupo representativo de la población. Incluso si reconocemos plenamente que las encuestas están produciendo algún error, no puede haber este tipo de sesgo. A menos que haya un error sistemático en las encuestas, un error que se repite una y otra vez a menos que arreglen el sistema.
+
+Puede que estos errores se produzcan porque el grupo entrevistado no sea representativo de la población completa porque tiene una definición diferente de lo que el representante realmente significa (de lo contrario el error sería aleatorio). Otra causa del error sistemático podría ser la formulación de las preguntas en la entrevista o el contexto en el que se ha formulado la pregunta (la mayoría de las veces los institutos combinan la encuesta con varias otras preguntas).
+
+Desafortunadamente no podemos analizar cómo se producen estos errores porque los institutos nunca publican ningún dato en bruto.
+
+Esta es otra causa posible para el error sistemático: el algoritmo de corrección que cada instituto de sondeo usa para "suavizar" los datos y minimizar el ruido. Y, por supuesto, estos algoritmos se mantienen privados.
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+
+house_colours <- c("orange","purple","blue","red")
+names(house_colours) <-   c("cs", "podemos", "pp", "psoe")
+
+ 
+results_elect <- encuestas %>%
+  filter(empresaymedio == "Resultado elecciones")  %>%
+  filter(fecha == "2016-06-26")
+
+ 
+ggplot(encuestas, aes(x=fecha, y=intencionvoto*100, col=partido)) +
+  geom_jitter(alpha=I(.3), size=I(1.4)) +
+  geom_smooth(aes(fill=partido), col=I("grey65"), show_guide=F,method = "loess") +
+  scale_color_manual(values=house_colours) +
+  scale_fill_manual(values=house_colours) +
+  labs(col="", y="Intención voto (Loess)", x="") +
+  #geom_vline(aes(xintercept=as.numeric(as.Date("2015-12-20"))),
+  #           linetype=5, colour="red") +
+  #geom_vline(aes(xintercept=as.numeric(as.Date("2016-06-26"))),
+  #           linetype=5, colour="red") +
+  ggrepel::geom_label_repel(aes(label = intencionvoto*100), data = results_elect) +
+  ggtitle("Encuestas sobre intención de voto en España",
+          "La línea vertical roja marca las elecciones del 2015 y 2016") +
+  guides(colour=guide_legend(override.aes = list(alpha = 1, size=3),
+                             direction="horizontal", keywidth=.8)) +
+  labs(caption = "Los porcentajes pertenecen a los resultados de las elecciones 2015-2016") +
+  theme_bw()+theme(legend.position="bottom")
+```
+
+Este gráfico es bastante interesante, ya que demuestra cómo las tendencias de la encuesta cambian drásticamente después de cada elección. Los resultados de las encuestas se siguen todas unas de las otras antes del 26J y tras las elecciones, que no suele acertar ningún medio, vuelven a reflejar los resultados del 26J.
+
+Es un problema real que anula la validez de los resultados. Lo que a nosotros nos interesa no es que el porcentaje asignado al PP o a Podemos sea el real, sino cómo diverge de medio en medio. De hecho, la limitación de este tipo de encuestas es nuestra fuente principal de información: los votantes no nos muestran quién ha ganado realmente, sino cómo sus sesgos al votar nos manifiestan su posicionamiento ideológico. Es nuestra hipótesis de partida, que se validará si en la práctica aparecen sesgos, y esos sesgos se corresponden con la asignación ideológica conocida/asumida por algunos de los medios estudiados.
+
+La segunda fuente de problemas es más seria: la movilización artificial del voto, junto con posibles casos de manipulación. Al asumir los partidos que las encuestas contienen algo de profecía autocumplida, porque los resultados de las encuestas influyen en la percepción del votante, cabe esperar que los partidos, de manera organizada o “espontánea” movilicen por todas las vías posibles a sus militantes y simpatizantes para que vayan a votar a su candidato como ganador.
+
+La hipótesis de partida que tendremos que validar es:
+
+$$intencionvoto_i =   consenso_i  +  sesgopormedio_i$$
+
+La intención de voto publicada por cada medio/empresa encuestadora es explicada por el consenso que se obtiene de la predicción de todas las encuestas más un sesgo por medio/empresa.
+
+Si nuestro modelo es capaz de predecir la intención de voto que se publicará “mañana”, demostraremos que las encuestas, que deberían ser elementos de utilidad pública, al tener un papel destacado en el sistema político, son utilizadas por los medios de comunicación para otros fines que la mera información.
+
+## Estado del arte
+
+La gran mayoría de los modelos realizados con encuestas tratan de estudiar la relación entre las encuestas de opinión y los resultados electorales intentando dar una predicción que no diste mucho de los resultados electorales.
+
+Un buen enfoque sobre la relación entre las encuestas de opinión y los resultados electorales se presenta en un artículo de 2005 de Simon Jackman, [“Pooling the Polls Over an Election Campaign”](http://eppsac.utdallas.edu/files/jackman/CAJP%2040-4%20Jackman.pdf):
+
+"Los resultados de las encuestas varían en el transcurso de las elecciones de campaña y en las organizaciones de encuestas, lo que dificulta el seguimiento de cambios genuinos en el apoyo electoral. Presento un modelo estadístico que rastrea los cambios en el apoyo electoral a través del tiempo, agrupando las encuestas y corrige la variación entre las organizaciones de encuesta debido a sesgos conocidos como "efectos cocina". El resultado es una estimación de las intenciones de voto menos sesgada y más precisa de lo que es posible de cualquier encuesta". (Simon Jackman)
+
+El modelo estadístico de Jackman aborda simultáneamente tres problemas: (1) la agrupación de encuestas para aumentar la precisión; (2) estimar y ajustar el sesgo de cualquier encuesta; (3) seguimiento de las tendencias y fluctuaciones en el sentimiento de los votantes durante el curso de la campaña.
+
+El método estadístico de Jackman propone usar el filtro de Kalmam, mediante el cuál podemos identificar el estado oculto (no medible) de la intención de voto latente (en gran parte no observado, excepto el día de las elecciones). Las encuestas son varias variables relacionadas con el estado de esa variable latente, pero no observadas directas de la misma.  Esa intención de voto latente cambia al azar debido a fuerzas desconocidas con el tiempo, y las diversas encuestas de opinión son visiones groseramente imperfectas de su realidad. El método es de última generación pero muy computacionalmente intensivo - requiere estimar la intención de voto para cada partido cada día desde que comenzaron las observaciones, el resultado son miles de parámetros. 
+
+Vale la pena señalar en este punto que hay buenas razones para creer que la intención de voto latente e inobservada no es tan volátil como las encuestas indican. Un brillante [estudio durante la elección presidencial de Estados Unidos de 2012 por Andrew Gelman y Andrew Rothschild](http://www.slate.com/articles/news_and_politics/politics/2016/08/don_t_be_fooled_by_clinton_trump_polling_bounces.html) demostró convincentemente que gran parte de la fluctuación en la intención de voto proviene de sesgos en las respuestas:
+
+"Cuando hubo buenas noticias para Mitt Romney, más republicanos optaron por responder a la encuesta; Cuando Obama tenía popularidad política, los demócratas tenían más probabilidades de responder. El resultado fue que los cambios grandes y sistemáticos en la no respuesta tuvieron el efecto de amplificar pequeños cambios en la intención real de los votantes ".
+
+Estos resultados son evidencia convincente para algún tipo de suavizado de los resultados de las encuestas, que no sólo proporciona un promedio ponderado de encuestas recientes, sino además un cierto escepticismo estadístico saludable a la aparente rapidez sube y baja de las encuestas de intención de voto.
+
+La entrada de blog de Peter’s staff stuff “House effects in New Zealand voting intention polls” echa un vistazo a los efectos “cocina” en el sondeo de Nueva Zelanda.  Propone usar modelos aditivos generalizados para cada elección individual y para cada partido a la vez, con el fin de producir un resultado electoral predicho para cada combinación de encuesta-partido-elección. 
+
+El artículo se limita a los siete partidos que probablemente influirá en las elecciones de 2017 y que también estuvieron en elecciones anteriores y los tres principales encuestadores.
+
+Para cada combinación de partido y año electoral usó los datos electorales de todos los encuestadores para predecir el resultado de la elección. El efecto “cocina” de cada encuestador se obtiene de la resta del dato que predice el modelo, una intención de voto por medio-partido-año de elección, menos el dato de los resultados de las elecciones.
+
+El objetivo de Peter era conseguir el efecto de “cocina” de cada medio para incluirlo en un modelo de predicción electoral en Nueva Zelanda (New Zealand election forecasts). Objetivo diferente al que pretendo con mi modelo pero basándome en este blog probé un modelo aditivo generalizado a mis datos. El ajuste fue tan perfecto que en mi modelo he utilizado GAM.
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+datajson <- fromJSON("https://spreadsheets.google.com/feeds/list/1ZLjZikluov2o5ZJkpgGzDO5bTg34eDKyM1H2OQ445BM/od6/public/basic?alt=json")
+
+#separa por ", " "pp:3,1, psoe:2.2,...."
+items <- strsplit(datajson$feed$entry$content$`$t`,", ")
+#separamos el nombre de las variables de su valor
+items <- lapply(items, strsplit, ": ")
+#hacemos pequeÃ±as matrices en una columna los nombres y en la otra los valores 
+lista <- unlist(items, recursive = FALSE)
+#generamos un data frame con 2 col, uno los nombres y otros los valores
+df <- data.table(do.call("rbind", lista))
+#creamos la vble time para poder generar el data frame con 9 cols y 265 obs
+df$time <- rep(1:length(items),as.vector(sapply(items,length)))
+df <- dcast(df, time ~ V1, value.var = "V2")
+
+df$fecha <- as.character(datajson$feed$entry$title$`$t`)
+df$time <- NULL
+
+cols <- c("margendeerror","pp","psoe","cs","podemos","iu")
+df <- as.data.frame(df)
+df[,cols] <- lapply(df[,cols],function(x) {as.numeric(gsub(",",".",x))})
+df[,"fecha"] <- as.Date(df[,"fecha"],format= "%d/%m/%Y")
+
+### problema con 2 valores q tienen un punto
+df[,8] <- sapply(df[,8],function(x) {gsub(".","",x,fixed=T)})
+df$muestra<- as.numeric(df[,8])
+df$iu <- df[,8] <- NULL
+df <- df[order(df$fecha),]
+
+df$elec20D <- sapply(df[,"fecha"], function(x) {
+  if (difftime(x,as.Date("2015-12-20"),units=c("days")) >= 0) {1}
+  else if(difftime(x,as.Date("2015-12-20"),units=c("days"))< 0) {0}})
+df$elec26J <- sapply(df[,"fecha"], function(x) {
+  if (difftime(x,as.Date("2016-06-26"),units=c("days")) >= 0) {1}
+  else if(difftime(x,as.Date("2016-06-26"),units=c("days"))< 0) {0}})
+# Create matrix of numeric predictors
+xreg <- cbind(df$elec20D, 
+              df$elec26J)
+
+
+ts_pp <- ts(df$pp)
+colnames(xreg) <- c("20D","26J")
+
+#pp2 <- window(df$partido, end=279)
+# Find ARIMAX model
+#pp3 <- window(df_df$pp, end=263)
+modArima <- auto.arima(ts_pp, xreg=xreg)
+
+#par(mfrow=c(2,1))
+ts.plot(ts_pp, xlab="t", ylab="", main="Ajuste utilizando ARIMA (PP)")
+lines(fitted(modArima), col=2)
+legend("topleft", lty=1, col=c(1,2), legend = c("Actual", "Predicted"))
+
+
+df$ppx <- df$pp/100
+mod_pp <- gam(ppx ~ s(as.numeric(fecha)) + empresaymedio, 
+              family = "quasibinomial", data = df)
+
+
+ts_ppx <- ts(df$ppx)
+ts.plot(ts_ppx, xlab="t", ylab="", main="Ajuste utilizando GAM (PP)")
+lines(fitted(mod_pp), col=2)
+legend("topleft", lty=1, col=c(1,2), legend = c("Actual", "Predicted"))
+rm(df)
+```
+
+### Modelos aditivos generalizados (GAM)
+
+
+Los modelos GAM tienen la forma
+
+$$y =   b_0  + f_1(x_1)  +  f_2(x_2)  + \dots  +  f_m(x_m) + \epsilon $$
+
+donde las $f_i(x_i)$ son funciones polinómicas por tramos que tratan de explicar la  variación de  la variable dependiente $y_i$, con  la  variable  predictora $x_i$ quitando  la  parte  explicada  por  las  otras variables. La  gran  ventaja  de este  método  es  que  el  usuario  no tiene  que sugerir  el  tipo  de  función existente  entre las variables sino que es el modelo quien define la forma de esta relación, en vez  de  tener  que  elegir  un  solo  parámetro $i$ que  mejor  ajuste  para  todo el  rango  de  valores  de  la variable correspondiente. La forma de la función quedará determinada por los datos disponibles y por un parámetro de suavizado que establece que tan cerca la función tiene que ajustar a los puntos.
+
+## Metodología a seguir
+
+### Lectura de datos
+
+El modelo se nutre de dos fuentes de datos, el agregador de sondeos de [El Mundo](http://www.elmundo.es/grafico/espana/2015/10/15/561fe19422601dd7728b45ef.html) recopila los datos de 282 trabajos realizados por 19 empresas encuestadoras desde enero de 2015 y de la [Wikipedia](https://en.wikipedia.org/wiki/Opinion_polling_for_the_next_Spanish_general_election).
+
+Los datos provienen de estudios de opinión elaborados por empresas encuestadoras, la mayoría para su publicación en diferentes medios de comunicación: Sigma Dos (Mediaset España y El Mundo), GAD3 (ABC), Metroscopia (El País), NC Report (La Razón), TNS Demoscopia (Antena 3), Invymark (La Sexta), MyWord (Cadena SER), Celeste-Tel (eldiario.es), DYM (El Confidencial), GESOP (El Periódico), Demoscopia y Servicios (Es Radio y 13TV), 20 Minutos (A+M), IMOP (Llorente & Cuenca), CIS, IBES (Última Hora), Simple Lógica, Encuestamos…
+
+Para obtener los datos de El Mundo se captura la llamada que el javascript local hace al servidor. Los datos de la Wikipedia se extrajeron mediante Web scraping. El dataset final contiene el partido, el medio, la intención de voto, fecha, el margen de error y el tamaño de muestra.   
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+head(encuestas,3)
+
+```
+
+### Modelo para el cálculo del consenso
+
+Los modelos aditivos generalizados ofrecen una solución óptima a una amplia gama de desafíos de suavizado.
+Para echar un vistazo a los efectos “cocina” en los sondeos, decidimos usar modelos aditivos generalizados para producir un resultado electoral predicho para cada combinación de encuesta-partido que llamaremos consenso.
+
+La función que genera este consenso calcula este valor predicho en un fecha determinada $t_i$. Para cada fecha que pasamos a la función “consenso” el modelo devuelve una predicción en ese punto, las predicciones son para todos los días y partidos. Entrenamos al modelo con datos anteriores a esa fecha, sin incluirla.
+
+El resultado es este suavizado (consenso):
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+#función calcula consenso
+consenso <- function(hastaaqui, ventana, el_partido, dataset){
+  
+  # data for party 
+  data_id <- dataset %>%
+    filter(partido == el_partido, fecha < hastaaqui)
+  data_id$id <- row.names(data_id)
+  
+  
+  datos_modelo <- tail(data_id, ventana)
+  datos_modelo$fecha_modelo <- as.numeric(datos_modelo$fecha)
+  
+  
+  
+  mod <- gam(intencionvoto ~ t2(fecha_modelo, k=3), 
+             family = "quasibinomial", data = datos_modelo)
+  
+  
+  preddata <- data.frame(fecha_modelo = as.numeric(hastaaqui))
+  
+  res <- data.frame(fecha = hastaaqui, 
+                    partido = el_partido, 
+                    consenso = predict(mod, newdata = preddata, type = "response") )
+  
+  
+  res
+  
+}
+
+
+
+elpartido <- c("pp","psoe","cs","podemos")
+ventana <- 60 
+
+# todos los días desde la encuesta 60
+fechas <- encuestas$fecha[ventana+1]
+fechas <- seq(fechas, Sys.Date(), by = "day")
+
+prueba <- expand.grid(fechas, elpartido)
+colnames(prueba) <- c("fecha", "partido")
+
+
+#### calcula el consenso para cada id del data frame posterior a la ventana, por partido.
+
+params <- apply(prueba, 1, function(x){
+  consenso(as.Date(x["fecha"]), 60, x["partido"], encuestas)
+})
+
+# predicciones para todos los días y partidos
+df <- do.call(rbind, params)
+
+# predicciones solo los días de encuesta
+final <- merge(encuestas, df)
+
+final$sesgo <- final$intencionvoto - final$consenso
+
+
+
+###### dibujamos consenso que es nuestro predcit del método GAM
+house_colours <- c("orange", "purple", "blue", "red")
+
+names(house_colours) <- c("cs", "podemos", "pp", "psoe")
+
+
+ggplot(final, aes(x=fecha, y=intencionvoto*100, col=partido)) +
+  geom_jitter(alpha=I(.3), size=I(1.4)) +
+  geom_line(aes(y=consenso*100), data=df) +
+  scale_color_manual(values=house_colours) +
+  #scale_fill_manual(intencionvoto=palette) +
+  labs(col="", y="Intención voto predicha (GAM)", x="") +
+  guides(colour=guide_legend(override.aes = list(alpha = 1, size=3),
+                             direction="horizontal", keywidth=.8)) +
+  labs(col="", y="Intención de voto (%)", x="") +
+  ggtitle("Intención de voto",
+          "Cálculo del consenso") +
+  theme_bw()+theme(legend.position="bottom")
+
+
+```
+
+
+El gráfico refleja cómo el consenso recoge perfectamente la tendencia de los datos. La diferencia entre ese consenso y cada punto, que son los datos de intención de voto publicados, es el sesgo de cada medio.
+
+### Modelo
+
+Una vez hemos calculado el consenso, planteamos el siguiente modelo:
+
+$$intencionvoto_i =   consenso_i  +  sesgopormedio_i$$
+
+Para cada partido se calcula una regresión lineal, con el modelo anteriormente propuesto.
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+medios <- c("Encuestamos","GESOP/El Periódico","GIPEyOP/Mediaflows","JJD/lainformacion.com","La Vanguardia (GAD3)","Redondo&Asociados","20 Minutos (A+M)","Libertad Digital (Demoscopia y Servicios","Llorente & Cuenca (IMOP)","NC Report","Resultado elecciones","Última Hora (IBES)","Libertad Digital (Demoscopia y Servicios)")
+final <- final[!(final$empresaymedio %in% medios),]
+
+regresiones <- function (elpartido) {
+
+tmp <- final[final$partido == elpartido,]
+modelo <- lm(intencionvoto ~ -1 + consenso + empresaymedio, data = tmp)
+#print (summary(modelo))
+predict(modelo, interval = "predict")
+
+kk <- cbind(tmp, predict(modelo, interval = "predict"))
+
+kk$lower <- 100 * kk$lwr
+kk$upper <- 100 * kk$upr
+kk$pred  <- 100 * kk$fit
+kk$consenso  <- 100 * kk$consenso
+kk$intencionvoto <- 100 * kk$intencionvoto
+kk$residuos <- residuals(modelo) *100
+
+kk$pred  <- 100 * kk$fit
+
+
+
+p <- ggplot(kk, aes(x = kk$intencionvoto, y = 100 * kk$fit, shape= kk$empresaymedio)) + 
+  geom_point(aes(colours=factor(empresaymedio))) +
+  geom_abline(col="red") +
+  scale_shape_manual(values = c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23)) +
+  guides(shape=guide_legend(order = 1, keywidth=.8,title = "Medio")) +
+  labs(col="", y="Predicho", x="Real") +
+  ggtitle(paste0("Predicho vs real - ",toupper(elpartido))) +
+  theme(legend.key.width=unit(0.3,"cm"),legend.key.height=unit(0.4,"cm"),legend.title=element_blank())
+
+plot(p)
+
+}
+
+regresiones("pp")
+regresiones("psoe")
+regresiones("podemos")
+regresiones("cs")
+```
+
+A la vista de estos cuatro gráficos, que representan el valor real frente al valor predicho, podemos decir que nuestro modelo es capaz de predecir la intención de voto. 
+
+Al haber generado el modelo basándonos en una muestra nos tenemos que preguntar si el modelo se ajusta bien a los datos observados o está influenciado por un pequeño número de casos, y por otro lado si el modelo se puede generalizar a otras muestras. Es un error pensar que porque un modelo se ajuste bien a los datos observados entonces podemos tomar conclusiones más allá de nuestra muestra.
+
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+residuals_fitted <- function (elpartido) {
+  
+  tmp <- final[final$partido == elpartido,]
+  modelo <- lm(intencionvoto ~ -1 + consenso + empresaymedio, data = tmp)
+  #print (summary(modelo))
+  predict(modelo, interval = "predict")
+  
+  kk <- cbind(tmp, predict(modelo, interval = "predict"))
+  
+  kk$lower <- 100 * kk$lwr
+  kk$upper <- 100 * kk$upr
+  kk$pred  <- 100 * kk$fit
+  kk$consenso  <- 100 * kk$consenso
+  kk$intencionvoto <- 100 * kk$intencionvoto
+  kk$residuos <- residuals(modelo) *100
+  
+  kk$pred  <- 100 * kk$fit
+  
+  plot(modelo, which = 1,main=toupper(elpartido))
+  
+}
+
+par(mfrow=c(1,2))
+residuals_fitted("pp")
+residuals_fitted("psoe")
+residuals_fitted("podemos")
+residuals_fitted("cs")
+```
+
+El gráfico “Resiuos vs Fitted” enfrenta los errores residuales frente a sus valores ajustados. Los residuos deben estar distribuidos al azar alrededor de la línea horizontal que representa un error residual de cero; es decir, no debe haber una tendencia clara en la distribución de puntos. 
+
+En este caso los datos parecen exhibir un ligero incremento de la varianza en los extremos.
+
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+residuals_qq <- function (elpartido) {
+  
+  tmp <- final[final$partido == elpartido,]
+  modelo <- lm(intencionvoto ~ -1 + consenso + empresaymedio, data = tmp)
+  #print (summary(modelo))
+  predict(modelo, interval = "predict")
+  
+  kk <- cbind(tmp, predict(modelo, interval = "predict"))
+  
+  kk$lower <- 100 * kk$lwr
+  kk$upper <- 100 * kk$upr
+  kk$pred  <- 100 * kk$fit
+  kk$consenso  <- 100 * kk$consenso
+  kk$intencionvoto <- 100 * kk$intencionvoto
+  kk$residuos <- residuals(modelo) *100
+  
+  kk$pred  <- 100 * kk$fit
+  
+  plot(modelo, which = 2,main=toupper(elpartido))
+  
+}
+
+par(mfrow=c(1,2))
+residuals_qq("pp")
+residuals_qq("psoe")
+residuals_qq("podemos")
+residuals_qq("cs")
+```
+
+En el gráfico “Normal Q-Q” los residuos tipificados se trazan contra los cuantiles de una distribución normal estándar. Si los residuos se distribuyen normalmente los datos se deben situar a lo largo de la línea. En estos casos, los datos hacen parecen tener una distribución normal, aunque en las colas parece que se separa de la línea, sobre todo para Ciudadanos. 
+
+Los gráficos identifican outliers, los estudiaremos:
+
+
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+residuos <- function (elpartido) {
+  
+  tmp <- final[final$partido == elpartido,]
+  modelo <- lm(intencionvoto ~ -1 + consenso + empresaymedio, data = tmp)
+  #print (summary(modelo))
+  predict(modelo, interval = "predict")
+  
+  kk <- cbind(tmp, predict(modelo, interval = "predict"))
+  
+  kk$lower <- 100 * kk$lwr
+  kk$upper <- 100 * kk$upr
+  kk$pred  <- 100 * kk$fit
+  kk$consenso  <- 100 * kk$consenso
+  kk$intencionvoto <- 100 * kk$intencionvoto
+  kk$residuos <- residuals(modelo) *100
+  
+  kk$pred  <- 100 * kk$fit
+  
+  
+  
+  
+  best_in_class <- kk %>% 
+    select("intencionvoto","pred","residuos","consenso","empresaymedio") %>%
+    filter(residuos < -3.5 | residuos > 3.5) %>%
+    gather(key = "iv", value = "x", -intencionvoto, -pred, -residuos,-empresaymedio)  
+  
+  best_in_class$empresaymedio[best_in_class$empresaymedio == "eldiario.es (Celeste-Tel)"]  <- "eldiario.es"
+  best_in_class$empresaymedio[best_in_class$empresaymedio == "La Razón (NC Report)"]  <- "Razón"
+  best_in_class$empresaymedio[best_in_class$empresaymedio == "El Confidencial (DYM)"]  <- "Confidencial"
+  best_in_class$empresaymedio[best_in_class$empresaymedio == "Simple Lógica"]  <- "Simple L."
+
+  q <- kk %>% select("intencionvoto","pred","residuos","consenso","empresaymedio") %>% 
+    gather(key = "iv", value = "x", -intencionvoto, -pred, -residuos,-empresaymedio) %>%  # Get data into shape
+    ggplot(aes(x = x, y = intencionvoto)) +  # Note use of `x` here and next line
+    geom_segment(aes(xend = x, yend = pred), alpha = .2) +
+    geom_point(aes(color = residuos)) +
+    #geom_text(aes(label = factor(empresaymedio)), data = best_in_class) +
+    ggrepel::geom_label_repel(aes(label = factor(empresaymedio)), data = best_in_class) +
+    #geom_text(aes(label = factor(empresaymedio))) +
+    scale_color_gradient2(low = "blue", mid = "white", high = "red") +
+    guides(color = FALSE) +
+    geom_point(aes(y = pred), shape = 1) +
+    facet_grid(~ iv, scales = "free_x") +  # Split panels here by `iv`
+    #scale_x_discrete(labels= abbreviate) +
+    ggtitle(paste0("Consenso vs Dato real ", toupper(elpartido)))
+    theme_bw()
+  plot(q)
+  
+}
+
+
+residuos("pp")
+residuos("psoe")
+residuos("podemos")
+residuos("cs")
+```
+
+El gráfico muestra los residuos vs una de las dos componentes del modelo “conseso”. Los puntos rojos del gráfico son residuos altos, los azules bajos y los blancos son el datos real. Las líneas marcan la distancia entre el real y el predicho. 
+
+Los colores ayudan muy bien a identificar la no linealidad en los datos. En conjunto, al no tener grupos de rojos y azules que dependan de valores altos o bajos del consenso, concluimos que la relación entre las variables es lineal. 
+
+
+
+
+Tenemos un modelo de regresión con la capacidad de relacionar la intención de voto con el consenso más un sesgo que depende del medio de comunicación. Podemos utilizarlo ahora para predecir eventos futuros de la variable dependiente a través de nuevos valores de la variable predictora.
+
+Probamos el modelo generando valores predichos que no han sido incluidos en el modelo. Cada punto predicho se calcula con un consenso, que no incluye ese punto en el modelo (GAM) y la posterior regresión que tampoco lo utiliza.
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+predi_intencion_voto <- function(hoy, final, ventana, consensos){
+  
+  encuestas_train <- tail(final[final$fecha < hoy,], 
+                          ventana * length(unique(final$partido)))
+  
+  res <- expand.grid(
+    empresaymedio = unique(encuestas_train$empresaymedio),
+    partido       = unique(encuestas_train$partido),
+    fecha         = hoy
+  )
+  res <- merge(res, consensos, by = c("fecha", "partido"))
+  
+  ldply(unique(encuestas_train$partido), function(partido){
+    tmp <- encuestas_train[encuestas_train$partido == partido,]
+    modelo <- lm(intencionvoto ~ -1 + consenso + empresaymedio, data = tmp)
+    tmp_res <- res[res$partido == partido,]
+    tmp_res <- tmp_res[tmp_res$empresaymedio %in% tmp$empresaymedio,]
+    cbind(tmp_res, predict(modelo, tmp_res, interval = "predict"))
+  })
+}
+
+
+
+### PRIEMRO PARA GRAFICO IC
+### SEGUNDO DESTAPADO PARA PROBAR QUE FUNCIONA
+fechas_interes <- seq(Sys.Date() - 120, max(final$fecha), by = "day")
+#fechas_interes <- seq(Sys.Date() - 120, Sys.Date(), by = "day")
+### TAPADO PARA EL GRÁFICO DE LOS INTERVALOS DE CONFIANZA PARA VER LO QUE ACIERTO
+### DESTAPADO PARA PROBAR QUE FUNCIONA
+fechas_interes <- fechas_interes[fechas_interes %in% final$fecha]
+
+comparacion_preds <- ldply(fechas_interes, function(fecha) predi_intencion_voto(fecha, final, 60, df))
+
+tmp <- merge(comparacion_preds, final[, c("fecha", "partido", "empresaymedio", "intencionvoto", "sesgo")])
+
+ggplot(tmp, aes(x = fecha, y = intencionvoto*100,col=partido)) +
+  #geom_line(col = "blue") +
+  geom_jitter(alpha=I(.3), size=I(1.4)) +
+  facet_wrap(~partido, scales="free_y") +
+  scale_color_manual(values=house_colours) +
+   labs(col="", y="Intención de voto (%)", x="") +
+  geom_ribbon(aes(ymin = lwr*100, ymax = upr*100), fill = "grey", alpha = 0.3) +
+  geom_line(aes(y = fit*100,x = fecha), col = "black", alpha = 0.6) +
+  #geom_line(aes(y = q90), col = "gray", alpha = 0.6) +
+  theme_bw()
+```
+
+Son pocos los puntos que se quedan fuera del intervalo de confianza. El modelo funciona.
+
+Podemos concluir que nuestra hipótesis de partida es cierta. Los medios de comunicación publican encuestas con un determinado sesgo que sobreestima o subestima la intención de voto real. 
+
+## Conclusiones
+
+### Análisis del sesgo
+
+Durante el proceso de creación de este modelo, he obviado un resultado muy interesante, el análisis del sesgo.
+
+El sesgo lo obtenemos al calcular la diferencia del valor predicho con el modelo aditivo generalizo (GAM) menos el valor real de intención de voto. 
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+
+
+final$empresaymedio <- as.character(final$empresaymedio)
+
+final$empresaymedio[final$empresaymedio == "Antena 3 (TNS Demoscopia)"] <-  "Antena 3"
+final$empresaymedio[final$empresaymedio == "Simple Lógica"] <-  "Simple Lógica"                     
+final$empresaymedio[final$empresaymedio == "SER (MyWord)"] <-  "SER"                     
+final$empresaymedio[final$empresaymedio == "La Razón (NC Report)"] <-  "La Razón"              
+final$empresaymedio[final$empresaymedio == "eldiario.es (Celeste-Tel)"] <-  "eldiario.es"         
+final$empresaymedio[final$empresaymedio == "El País (Metroscopia)"] <-  "El País"            
+final$empresaymedio[final$empresaymedio == "esRadio (Demoscopia y Servicios)"] <-  "esRadio"  
+final$empresaymedio[final$empresaymedio == "La Sexta (Invymark)"] <-  "La Sexta"               
+final$empresaymedio[final$empresaymedio == "CIS"] <-  "CIS"                              
+final$empresaymedio[final$empresaymedio == "Mediaset España (Sigma Dos)"] <-  "Mediaset"       
+final$empresaymedio[final$empresaymedio == "ABC (GAD3)"] <-  "ABC"                        
+final$empresaymedio[final$empresaymedio == "El Confidencial (DYM)"] <-  "El Confidencial"            
+final$empresaymedio[final$empresaymedio == "El Mundo (Sigma Dos)"] <-  "El Mundo"              
+final$empresaymedio[final$empresaymedio == "El Periódico (GESOP)"] <-  "El Periódico"              
+final$empresaymedio[final$empresaymedio == "La Voz de Galicia (Sondaxe)"] <-  "La Voz de Galicia"      
+final$empresaymedio[final$empresaymedio == "El Español"] <-  "El Español"                        
+final$empresaymedio[final$empresaymedio == "TNS Demoscopia"] <-  "TNS"                    
+final$empresaymedio[final$empresaymedio == "JM&A/Público"] <-  "Público"                     
+final$empresaymedio[final$empresaymedio == "Estudio de Sociología Consultores"] <-  "Estudio Sociología"
+final$empresaymedio <- as.factor(final$empresaymedio)
+
+final %>% filter(partido == "pp"&!is.na(sesgo))%>%
+  mutate(empresaymedio = fct_reorder(empresaymedio, sesgo, .desc = T)) %>%
+  ggplot(aes(x = sesgo*100, fill=empresaymedio, y = empresaymedio)) +
+  geom_joy(scale = 2) + theme_joy() +
+  facet_wrap(~partido, scales="free_y") +
+  geom_vline(aes(xintercept=0))+
+  scale_y_discrete("",expand = c(0.01, 0)) +
+  ggtitle("Distribución del sesgo") +
+  scale_x_continuous("",expand = c(0, 0)) +
+  theme(legend.key.width=unit(0.3,"cm"),legend.key.height=unit(0.4,"cm"),legend.title=element_blank(),
+        legend.position="none",axis.text.y = element_text(size=10))
+
+final %>% filter(partido == "psoe"&!is.na(sesgo))%>%
+  mutate(empresaymedio = fct_reorder(empresaymedio, sesgo, .desc = T)) %>%
+  ggplot(aes(x = sesgo*100, fill=empresaymedio, y = empresaymedio)) +
+  geom_joy(scale = 2) + theme_joy() +
+  facet_wrap(~partido, scales="free_y") +
+  geom_vline(aes(xintercept=0))+
+  scale_y_discrete("",expand = c(0.01, 0)) +   
+  ggtitle("Distribución del sesgo") +
+  scale_x_continuous("",expand = c(0, 0)) +
+  theme(legend.key.width=unit(0.3,"cm"),legend.key.height=unit(0.4,"cm"),legend.title=element_blank(),
+        legend.position="none",axis.text.y = element_text(size=10))
+      
+
+
+final %>% filter(partido == "podemos"&!is.na(sesgo))%>%
+  mutate(empresaymedio = fct_reorder(empresaymedio, sesgo, .desc = T)) %>%
+  ggplot(aes(x = sesgo*100, fill=empresaymedio, y = empresaymedio)) +
+  geom_joy(scale = 2) + theme_joy() +
+  facet_wrap(~partido, scales="free_y") +
+  geom_vline(aes(xintercept=0))+
+  scale_y_discrete("",expand = c(0.01, 0)) +   
+  ggtitle("Distribución del sesgo") +
+  scale_x_continuous("",expand = c(0, 0)) +
+  theme(legend.key.width=unit(0.3,"cm"),legend.key.height=unit(0.4,"cm"),legend.title=element_blank(),
+        legend.position="none",axis.text.y = element_text(size=10))
+     
+
+final %>% filter(partido == "cs"&!is.na(sesgo))%>%
+  mutate(empresaymedio = fct_reorder(empresaymedio, sesgo, .desc = T)) %>%
+  ggplot(aes(x = sesgo*100, fill=empresaymedio, y = empresaymedio)) +
+  geom_joy(scale = 2) + theme_joy() +
+  facet_wrap(~partido, scales="free_y") +
+  geom_vline(aes(xintercept=0))+
+  scale_y_discrete("",expand = c(0.01, 0)) +   
+  ggtitle("Distribución del sesgo") +
+  scale_x_continuous("",expand = c(0, 0)) +
+  theme(legend.key.width=unit(0.3,"cm"),legend.key.height=unit(0.4,"cm"),legend.title=element_blank(),
+        legend.position="none",axis.text.y = element_text(size=10))
+
+
+```
+
+El gráfico muestra la distribución del sesgo por partido y medio. 
+
+Para el PP son los medios más conservadores los que tienen una distribución con cola a la derecha, sobrestimando la intención de voto.
+
+Son poco los medios que no tienen un claro sesgo. TNS es uno de los institutos de investigación de mercados con menos sesgo. Si nos fijamos en sus distribuciones son, por lo general, bastante simétricas y centradas en cero.
+
+En el artículo [“EL PERFIL IDEOLÓGICO DE LOS MEDIOS DE PRENSA ESPAÑOLES”](http://www.carlosgonzalo.es/el-perfil-ideologico-de-los-medios-de-prensa-espanoles)  analiza la ideología política de los medios de comunicación en España.
+
+El cuadro resumen es una adaptación de la clasificación que aparece en ["Quién manda en los medios de comunicación de España"](http://www.solosequenosenada.com/2011/11/18/quien-manda-en-los-medios-de-comunicacion-en-espana/), artículo que se revisa periódicamente en función de las últimas tendencias de medios y apoyos a determinados partidos políticos.
+
+
+| Medio               | Perfil ideológico                  |
+| :----------------- :| :-------------------------------- :|
+| Cadena COPE         | Ultra derechas                     |
+| ABC                 | Derechas (pro-PP)                  | 
+| Voz de Galicia      | Derechas (pro-PP)                  | 
+| La Razón	          | Derechas (pro-PP y Pro-Ciudadanos) | 
+| El Mundo	          | Derechas (Pro-Ciudadanos)          | 
+| El País             | Izquierdas                         | 
+| El Periódico	      | Izquierdas                         | 
+| La Sexta	          | Izquierdas (pro-Podemos)           | 
+| Público             | Derechas (pro-Ciudadanos)          | 
+| Mediaset            | Ultra derecha (pro-PP)             | 
+| EsRadio             | Derechas (pro-Ciudadanos)          | 
+| El Confidencial     | Derechas (pro-Ciudadanos)          | 
+
+
+¿Qué nos dice nuestro análisis del sesgo sobre este artículo?
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+
+
+
+final%>%filter(partido%in%c("pp","psoe","podemos","cs")&!is.na(sesgo))%>%
+  ggplot(aes(x=partido,y=sesgo*100,fill=partido))+geom_boxplot()+facet_wrap(~empresaymedio)+
+  scale_fill_manual(values=house_colours) +
+  labs(col="", y="Sesgo", x="") +
+  theme(axis.text.x=element_text(angle=90,hjust=1),legend.title=element_blank(),strip.text = element_text(size=6))
+```
+
+Los medios de comunicación que ideológicamente pertenecen a un partido político suelen favorecerle en las encuestas que publican. El gráfico y el artículo coinciden. 
+
+
+Este gráfico nos deja otra conclusión importante. Observemos el dato de TNS, el sesgo oscila para todos los partidos alrededor de cero, su distribución (gráfico…) es para todos los partidos una normal centrada en el cero, sesgo que se debería esperar para todos los medios que usan sus datos.  
+
+Antena 3 publica los resultados de las encuestas de TNS, ¿porqué el sesgo cambian tanto si los datos vienen de la misma fuente?
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE}
+
+final%>%filter(partido%in%c("pp","psoe","podemos","cs")&!is.na(sesgo))%>%
+  filter(empresaymedio%in%c("TNS","Antena 3"))%>%
+  ggplot(aes(x=partido,y=sesgo*100,fill=partido))+geom_boxplot()+facet_wrap(~empresaymedio)+
+  scale_fill_manual(values=house_colours) +
+  labs(col="", y="Sesgo", x="") +
+  theme(axis.text.x=element_text(angle=90,hjust=1),legend.title=element_blank())
+
+```
+
+Al asumir los partidos que las encuestas influyen en la percepción del votante, ¿Manipulan los medios las encuestas?, ¿Manipulan las empresas encuestadoras los datos dependiendo del medio que los publiquen?.
+
+### Predicción para mañana
+
+Uno de los objetivos de este trabajo consistía en ser capaces de predecir el dato que darán “mañana” los medios de comunicación sobre intención de voto.
+
+La última encuesta es del día 7 de agosto de 2017. Buscaremos en internet la última intención de voto publicada y trataremos de predecirla con nuestro modelo.
+
+
+
+## Trabajo futuro
+
+La creación de un paquete para R con encuestas electorales, muy similar al que tiene en Nueva Zelanda “nzelect”. Que incluya el modelo y todos los gráficos que en este trabajo aparecen. Este trabajo será el principio, pero la idea es ir metiendo código de terceros y enriquecer este paquete.
+
+Una aplicación con shiny que sea capaz de dar la intención de voto de cada medio para “mañana”. 
+
+
